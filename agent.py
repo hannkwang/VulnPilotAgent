@@ -5,9 +5,10 @@ warnings.filterwarnings("ignore", category=Warning, module="urllib3")
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
-from tool_definitions import fetch_cve_tool_def, check_system_tool_def, patch_system_tool_def
+from tool_definitions import fetch_cve_tool_def, check_system_tool_def, check_epss_tool_def, patch_system_tool_def
 from tools.fetch_cve import fetch_cve
 from tools.check_system import check_system
+from tools.check_epss import check_epss
 from tools.patch_system import patch_system
 
 load_dotenv()
@@ -53,10 +54,12 @@ Mode: {mode}
 
 Your steps:
 1. Call fetch_cve to get the full vulnerability details for the requested CVE ID.
-2. For each distinct product listed in the CVE's affected products, call check_system to detect
+2. Call check_epss to get the EPSS exploit probability score and CISA KEV status.
+3. For each distinct product listed in the CVE's affected products, call check_system to detect
    whether it is installed on this machine. Focus on the most common product names (e.g. 'openssl',
    'nginx', 'python') — not every CPE entry, just the unique software packages.
-3. Based on the CVSS score and which affected software was actually found, produce a triage decision.
+4. Based on the CVSS score, EPSS data, KEV status, and which affected software was actually found,
+   produce a triage decision.
 {patch_instructions}
 Triage decision:
 - CRITICAL: CVSS >= 9.0 AND affected software found locally
@@ -64,6 +67,11 @@ Triage decision:
 - MEDIUM:   CVSS >= 4.0 AND affected software found locally
 - LOW:      CVSS < 4.0 AND affected software found, OR software found but version not in affected range
 - INFORMATIONAL: No affected software found on this system
+
+Escalation rules (override the above when applicable):
+- If the CVE is in CISA KEV, treat as minimum P2 regardless of CVSS (active exploitation confirmed).
+- If EPSS score >= 0.1 (10%), note elevated real-world exploitation risk in the report.
+- If EPSS score >= 0.5 (50%), treat as minimum P2 and flag as high exploitation likelihood.
 
 Remediation priority:
 - P1 (24 hours):   CRITICAL
@@ -77,6 +85,8 @@ CVE TRIAGE REPORT
 ================
 CVE ID: [CVE-XXXX-XXXX]
 CVSS Score: [score] ([severity])
+EPSS Score: [score] ([percentile]th percentile) — [low/moderate/high] exploitation likelihood
+CISA KEV: [Listed / Not listed]
 Description: [one-sentence summary]
 Affected Software Found Locally: [list with detected versions, or "None found on this system"]
 TRIAGE DECISION: [CRITICAL/HIGH/MEDIUM/LOW/INFORMATIONAL]
@@ -90,6 +100,8 @@ TIMELINE: [concrete deadline based on priority]
 def execute_tool(name: str, tool_input: dict, patch_enabled: bool, dry_run: bool) -> str:
     if name == "fetch_cve":
         return fetch_cve(tool_input["cve_id"])
+    elif name == "check_epss":
+        return check_epss(tool_input["cve_id"])
     elif name == "check_system":
         return check_system(
             product_name=tool_input["product_name"],
@@ -109,7 +121,7 @@ def execute_tool(name: str, tool_input: dict, patch_enabled: bool, dry_run: bool
 
 def run_triage(cve_id: str, patch_enabled: bool = False, dry_run: bool = False) -> str:
     # Build tool list — only expose patch_system when patching is enabled.
-    tools = [fetch_cve_tool_def, check_system_tool_def]
+    tools = [fetch_cve_tool_def, check_epss_tool_def, check_system_tool_def]
     if patch_enabled:
         tools.append(patch_system_tool_def)
 

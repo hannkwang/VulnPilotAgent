@@ -41,6 +41,27 @@ check_system_tool_def = {
     },
 }
 
+check_epss_tool_def = {
+    "name": "check_epss",
+    "description": (
+        "Look up the EPSS (Exploit Prediction Scoring System) score for a CVE and check "
+        "whether it appears in CISA's Known Exploited Vulnerabilities (KEV) catalog. "
+        "EPSS gives the probability of exploitation in the next 30 days (0–1 scale). "
+        "A KEV listing means active exploitation has been confirmed in the wild. "
+        "Call this after fetch_cve to enrich the triage with real-world exploitability data."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "cve_id": {
+                "type": "string",
+                "description": "The CVE identifier, e.g. 'CVE-2024-1234'.",
+            }
+        },
+        "required": ["cve_id"],
+    },
+}
+
 patch_system_tool_def = {
     "name": "patch_system",
     "description": (
