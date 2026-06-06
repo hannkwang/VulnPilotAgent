@@ -5,15 +5,17 @@ warnings.filterwarnings("ignore", category=Warning, module="urllib3")
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
-from tool_definitions import fetch_cve_tool_def, check_system_tool_def
+from tool_definitions import fetch_cve_tool_def, check_system_tool_def, patch_system_tool_def
 from tools.fetch_cve import fetch_cve
 from tools.check_system import check_system
+from tools.patch_system import patch_system
+import tools.patch_system as _patch_module
 
 load_dotenv()
 
-TOOLS = [fetch_cve_tool_def, check_system_tool_def]
 MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 4096
+
 
 def _get_os_info() -> str:
     if platform.system() == "Darwin":
@@ -24,11 +26,31 @@ def _get_os_info() -> str:
 
 _OS_INFO = _get_os_info()
 
-SYSTEM_PROMPT = f"""You are a cybersecurity analyst performing CVE triage on the local machine.
+
+def _build_system_prompt(patch_enabled: bool, dry_run: bool) -> str:
+    if patch_enabled:
+        mode = "PATCH MODE (auto-patch HIGH/CRITICAL findings)"
+        if dry_run:
+            mode += " [DRY RUN — commands will be shown but not executed]"
+    else:
+        mode = "TRIAGE ONLY MODE (no patching)"
+
+    patch_instructions = ""
+    if patch_enabled:
+        patch_instructions = """
+If triage decision is HIGH or CRITICAL:
+4. Call patch_system for each affected package found locally.
+   - Pass package_manager hint based on how check_system found it
+     (e.g. if check_system showed "Homebrew: openssl@3 ...", pass package_manager='brew').
+   - The admin will be prompted to authorize each patch interactively.
+5. After patching, call check_system again to verify the new installed version.
+6. Include patch outcome (authorized/declined, old→new version) in the triage report.
+"""
+
+    return f"""You are a cybersecurity analyst performing CVE triage on the local machine.
 
 System: {_OS_INFO}
-
-
+Mode: {mode}
 
 Your steps:
 1. Call fetch_cve to get the full vulnerability details for the requested CVE ID.
@@ -36,7 +58,7 @@ Your steps:
    whether it is installed on this machine. Focus on the most common product names (e.g. 'openssl',
    'nginx', 'python') — not every CPE entry, just the unique software packages.
 3. Based on the CVSS score and which affected software was actually found, produce a triage decision.
-
+{patch_instructions}
 Triage decision:
 - CRITICAL: CVSS >= 9.0 AND affected software found locally
 - HIGH:     CVSS >= 7.0 AND affected software found locally
@@ -60,6 +82,7 @@ Description: [one-sentence summary]
 Affected Software Found Locally: [list with detected versions, or "None found on this system"]
 TRIAGE DECISION: [CRITICAL/HIGH/MEDIUM/LOW/INFORMATIONAL]
 REMEDIATION PRIORITY: [P1/P2/P3/P4]
+PATCH STATUS: [patched/declined/not applicable — only if PATCH MODE]
 RECOMMENDED ACTIONS: [specific patch or mitigation steps]
 TIMELINE: [concrete deadline based on priority]
 """
@@ -73,21 +96,38 @@ def execute_tool(name: str, tool_input: dict) -> str:
             product_name=tool_input["product_name"],
             vendor_name=tool_input.get("vendor_name", ""),
         )
+    elif name == "patch_system":
+        return patch_system(
+            product_name=tool_input["product_name"],
+            package_manager=tool_input.get("package_manager", ""),
+        )
     return f"Unknown tool: {name}"
 
 
-def run_triage(cve_id: str) -> str:
+def run_triage(cve_id: str, patch_enabled: bool = False, dry_run: bool = False) -> str:
+    # Propagate dry_run to the patch module
+    _patch_module.DRY_RUN = dry_run
+
+    # Build tool list — only expose patch_system when patching is enabled
+    tools = [fetch_cve_tool_def, check_system_tool_def]
+    if patch_enabled:
+        tools.append(patch_system_tool_def)
+
+    system_prompt = _build_system_prompt(patch_enabled, dry_run)
     client = Anthropic()
     messages = [{"role": "user", "content": f"Triage {cve_id}"}]
 
-    print(f"Starting triage for {cve_id}...\n")
+    mode_label = ""
+    if patch_enabled:
+        mode_label = " [DRY RUN]" if dry_run else " [PATCH MODE]"
+    print(f"Starting triage for {cve_id}{mode_label}...\n")
 
     while True:
         response = client.messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
-            system=SYSTEM_PROMPT,
-            tools=TOOLS,
+            system=system_prompt,
+            tools=tools,
             messages=messages,
         )
 
