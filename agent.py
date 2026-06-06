@@ -9,7 +9,6 @@ from tool_definitions import fetch_cve_tool_def, check_system_tool_def, patch_sy
 from tools.fetch_cve import fetch_cve
 from tools.check_system import check_system
 from tools.patch_system import patch_system
-import tools.patch_system as _patch_module
 
 load_dotenv()
 
@@ -88,7 +87,7 @@ TIMELINE: [concrete deadline based on priority]
 """
 
 
-def execute_tool(name: str, tool_input: dict) -> str:
+def execute_tool(name: str, tool_input: dict, patch_enabled: bool, dry_run: bool) -> str:
     if name == "fetch_cve":
         return fetch_cve(tool_input["cve_id"])
     elif name == "check_system":
@@ -97,18 +96,19 @@ def execute_tool(name: str, tool_input: dict) -> str:
             vendor_name=tool_input.get("vendor_name", ""),
         )
     elif name == "patch_system":
+        # Defense-in-depth guard: reject patch calls even if tool somehow appears in messages.
+        if not patch_enabled:
+            return "Patching is disabled — run with --patch to enable."
         return patch_system(
             product_name=tool_input["product_name"],
             package_manager=tool_input.get("package_manager", ""),
+            dry_run=dry_run,
         )
     return f"Unknown tool: {name}"
 
 
 def run_triage(cve_id: str, patch_enabled: bool = False, dry_run: bool = False) -> str:
-    # Propagate dry_run to the patch module
-    _patch_module.DRY_RUN = dry_run
-
-    # Build tool list — only expose patch_system when patching is enabled
+    # Build tool list — only expose patch_system when patching is enabled.
     tools = [fetch_cve_tool_def, check_system_tool_def]
     if patch_enabled:
         tools.append(patch_system_tool_def)
@@ -152,7 +152,7 @@ def run_triage(cve_id: str, patch_enabled: bool = False, dry_run: bool = False) 
             for block in response.content:
                 if block.type == "tool_use":
                     print(f"  Tool: {block.name}  Input: {block.input}")
-                    result = execute_tool(block.name, block.input)
+                    result = execute_tool(block.name, block.input, patch_enabled, dry_run)
                     preview = result[:150] + "..." if len(result) > 150 else result
                     print(f"  Result: {preview}\n")
                     tool_results.append({

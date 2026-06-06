@@ -4,25 +4,39 @@ import platform
 
 _MACOS_KEYWORDS = {"macos", "mac os", "mac os x", "osx", "os x", "darwin", "apple", "macosx"}
 
+# Cache sw_vers output so repeated macOS CVE checks don't fork a new process each time.
+_SW_VERS_CACHE = None
+
+
+def _get_macos_version() -> str:
+    global _SW_VERS_CACHE
+    if _SW_VERS_CACHE is None:
+        try:
+            r = subprocess.run(["sw_vers"], capture_output=True, text=True, timeout=5)
+            if r.returncode == 0 and r.stdout.strip():
+                _SW_VERS_CACHE = r.stdout.strip()
+            else:
+                mac_ver = platform.mac_ver()[0]
+                _SW_VERS_CACHE = f"{mac_ver} ({platform.machine()})" if mac_ver else ""
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            mac_ver = platform.mac_ver()[0]
+            _SW_VERS_CACHE = f"{mac_ver} ({platform.machine()})" if mac_ver else ""
+    return _SW_VERS_CACHE
+
 
 def check_system(product_name: str, vendor_name: str = "") -> str:
     results = []
     name = product_name.lower().strip()
 
-    # 0. macOS version detection (for OS-level CVEs)
+    # 0. macOS version detection (for OS-level CVEs).
+    # Does NOT early-return — continues to binary/brew/pip probes so a package
+    # coincidentally named 'darwin' or 'apple' is still checked normally.
     if platform.system() == "Darwin":
         vendor_lc = vendor_name.lower().strip()
         if name in _MACOS_KEYWORDS or vendor_lc in _MACOS_KEYWORDS:
-            try:
-                r = subprocess.run(["sw_vers"], capture_output=True, text=True, timeout=5)
-                if r.returncode == 0 and r.stdout.strip():
-                    results.append(f"macOS version:\n{r.stdout.strip()}")
-            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-                mac_ver = platform.mac_ver()[0]
-                if mac_ver:
-                    results.append(f"macOS version: {mac_ver} ({platform.machine()})")
-            if results:
-                return f"Found '{product_name}' on this system:\n\n" + "\n\n".join(results)
+            version = _get_macos_version()
+            if version:
+                results.append(f"macOS version:\n{version}")
 
     # 1. Binary version probe
     for flag in ("--version", "-v", "version"):
