@@ -15,7 +15,14 @@ TOOLS = [fetch_cve_tool_def, check_system_tool_def]
 MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 4096
 
-_OS_INFO = f"{platform.system()} {platform.release()} ({platform.machine()})"
+def _get_os_info() -> str:
+    if platform.system() == "Darwin":
+        mac_ver = platform.mac_ver()[0]
+        if mac_ver:
+            return f"macOS {mac_ver} ({platform.machine()})"
+    return f"{platform.system()} {platform.release()} ({platform.machine()})"
+
+_OS_INFO = _get_os_info()
 
 SYSTEM_PROMPT = f"""You are a cybersecurity analyst performing CVE triage on the local machine.
 
