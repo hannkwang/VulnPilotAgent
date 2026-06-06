@@ -1,4 +1,5 @@
 import os
+import platform
 import warnings
 warnings.filterwarnings("ignore", category=Warning, module="urllib3")
 from anthropic import Anthropic
@@ -14,7 +15,13 @@ TOOLS = [fetch_cve_tool_def, check_system_tool_def]
 MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 4096
 
-SYSTEM_PROMPT = """You are a cybersecurity analyst performing CVE triage on the local machine.
+_OS_INFO = f"{platform.system()} {platform.release()} ({platform.machine()})"
+
+SYSTEM_PROMPT = f"""You are a cybersecurity analyst performing CVE triage on the local machine.
+
+System: {_OS_INFO}
+
+
 
 Your steps:
 1. Call fetch_cve to get the full vulnerability details for the requested CVE ID.
