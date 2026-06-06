@@ -2,10 +2,27 @@ import subprocess
 import shutil
 import platform
 
+_MACOS_KEYWORDS = {"macos", "mac os", "mac os x", "osx", "os x", "darwin", "apple", "macosx"}
+
 
 def check_system(product_name: str, vendor_name: str = "") -> str:
     results = []
     name = product_name.lower().strip()
+
+    # 0. macOS version detection (for OS-level CVEs)
+    if platform.system() == "Darwin":
+        vendor_lc = vendor_name.lower().strip()
+        if name in _MACOS_KEYWORDS or vendor_lc in _MACOS_KEYWORDS:
+            try:
+                r = subprocess.run(["sw_vers"], capture_output=True, text=True, timeout=5)
+                if r.returncode == 0 and r.stdout.strip():
+                    results.append(f"macOS version:\n{r.stdout.strip()}")
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+                mac_ver = platform.mac_ver()[0]
+                if mac_ver:
+                    results.append(f"macOS version: {mac_ver} ({platform.machine()})")
+            if results:
+                return f"Found '{product_name}' on this system:\n\n" + "\n\n".join(results)
 
     # 1. Binary version probe
     for flag in ("--version", "-v", "version"):
