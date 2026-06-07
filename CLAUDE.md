@@ -31,7 +31,7 @@ There are no tests or linters configured.
 
 **Entry point:** `main.py` validates the CVE ID format (`^CVE-\d{4}-\d{4,}$`) and parses `--patch` / `--dry-run` flags, then calls `run_triage()` in `agent.py`. It contains no agent logic.
 
-**Agentic loop:** `agent.py` (`run_triage()`) drives a `while True` loop calling `client.messages.create()` until `stop_reason == "end_turn"`. The Python code is purely mechanical — it executes whatever Claude requests and feeds results back. All decision-making happens inside Claude, not in the loop. Model and token budget are set as module-level constants (`MODEL`, `MAX_TOKENS`).
+**Agentic loop:** `agent.py` (`run_triage()`) drives a `while True` loop calling `client.messages.create()` until `stop_reason == "end_turn"`. The Python code is purely mechanical — it executes whatever Claude requests and feeds results back. All decision-making happens inside Claude, not in the loop. Model and token budget are set as module-level constants (`MODEL = "claude-sonnet-4-6"`, `MAX_TOKENS = 4096`).
 
 **Tool dispatch flow:**
 1. Claude calls `fetch_cve` → `tools/fetch_cve.py` hits the NVD API v2.0 and returns structured text
@@ -54,7 +54,7 @@ There are no tests or linters configured.
 
 **NVD parsing** (`tools/fetch_cve.py`): CVSS is read from `metrics.cvssMetricV31` first, falling back to `cvssMetricV30`; prefers `type == "Primary"` entries. CPE 2.3 URIs (`cpe:2.3:a:vendor:product:version:...`) are split on `:` to extract vendor (index 3) and product (index 4). Affected products are capped at 10 to avoid token bloat. Retries up to 3 times with backoff on 429/503.
 
-**Patching** (`tools/patch_system.py`): tries softwareupdate (macOS OS-level), Homebrew, pip, apt-get, dnf/yum in sequence, skipping any not present. Each command requires interactive `y/N` authorization from the admin before executing. `dry_run=True` prints the command instead. Uses `Popen` line-by-line streaming (capped at 2000 chars) to avoid buffering large upgrade logs. Admin decline sets `declined = True` and stops all further prompts for that call.
+**Patching** (`tools/patch_system.py`): tries softwareupdate (macOS OS-level), Homebrew, pip, apt-get, dnf/yum in sequence, skipping any not present. Each command requires interactive `y/N` authorization from the admin before executing. `dry_run=True` prints the command instead. Uses `Popen` line-by-line streaming (capped at 2000 chars) to avoid buffering large upgrade logs. Admin decline sets `declined = True` and stops all further prompts for that call. When stdin is non-interactive (piped/redirected), `EOFError` is caught and treated as a decline — all patches are skipped.
 
 **Logging** (`agent.py`, `_setup_logger()`): each `run_triage()` call creates a timestamped log file at `logs/<CVE-ID>_<YYYYMMDD_HHMMSS>.log`. The log captures: session metadata (CVE, mode, model), per-iteration headers with `stop_reason`, input/output token counts, and wall-clock latency, then each tool call with its full input dict and a 150-char result preview. The `logs/` directory is gitignored.
 
@@ -92,4 +92,7 @@ The Python loop has no intelligence — it only runs tools on demand and loops. 
 
 ## Triage Logic
 
-Defined entirely in the system prompt in `agent.py` (`_build_system_prompt()`). The mapping is CVSS score + whether affected software was found locally → CRITICAL/HIGH/MEDIUM/LOW/INFORMATIONAL → P1–P4 priority. EPSS and KEV status can escalate the priority (KEV → minimum P2; EPSS ≥ 0.5 → minimum P2).
+Defined entirely in the system prompt in `agent.py` (`_build_system_prompt()`). The mapping is CVSS score + whether affected software was found locally → CRITICAL/HIGH/MEDIUM/LOW/INFORMATIONAL → P1–P4 priority. EPSS and KEV status can escalate the priority:
+- KEV listed → minimum P2
+- EPSS ≥ 0.5 → minimum P2
+- EPSS ≥ 0.1 → note elevated exploitation risk in report (no priority change)
