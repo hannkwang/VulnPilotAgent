@@ -29,15 +29,16 @@ There are no tests or linters configured.
 
 ## Architecture
 
-**Entry point:** `main.py` validates the CVE ID format and parses `--patch` / `--dry-run` flags, then calls `run_triage()` in `agent.py`. It contains no agent logic.
+**Entry point:** `main.py` validates the CVE ID format (`^CVE-\d{4}-\d{4,}$`) and parses `--patch` / `--dry-run` flags, then calls `run_triage()` in `agent.py`. It contains no agent logic.
 
-**Agentic loop:** `agent.py` (`run_triage()`) drives a `while True` loop calling `client.messages.create()` until `stop_reason == "end_turn"`. The Python code is purely mechanical — it executes whatever Claude requests and feeds results back. All decision-making happens inside Claude, not in the loop.
+**Agentic loop:** `agent.py` (`run_triage()`) drives a `while True` loop calling `client.messages.create()` until `stop_reason == "end_turn"`. The Python code is purely mechanical — it executes whatever Claude requests and feeds results back. All decision-making happens inside Claude, not in the loop. Model and token budget are set as module-level constants (`MODEL`, `MAX_TOKENS`).
 
 **Tool dispatch flow:**
 1. Claude calls `fetch_cve` → `tools/fetch_cve.py` hits the NVD API v2.0 and returns structured text
-2. Claude calls `check_system` (once per affected product it deems relevant) → `tools/check_system.py` runs local system commands and returns what's installed
-3. If `--patch` is active and triage is HIGH/CRITICAL, Claude calls `patch_system` → `tools/patch_system.py` runs package manager upgrade commands after interactive admin authorization
-4. Claude reasons over the combined results and writes the final triage report
+2. Claude calls `check_epss` → `tools/check_epss.py` fetches EPSS score from FIRST and checks the CISA KEV catalog in a single call; returns both results concatenated
+3. Claude calls `check_system` (once per affected product it deems relevant) → `tools/check_system.py` runs local system commands and returns what's installed
+4. If `--patch` is active and triage is HIGH/CRITICAL, Claude calls `patch_system` → `tools/patch_system.py` runs package manager upgrade commands after interactive admin authorization
+5. Claude reasons over the combined results and writes the final triage report
 
 **Critical agentic loop invariants** (in `agent.py`):
 - The full `response.content` list (not just text) must be appended as the assistant message — tool_use blocks must be preserved so the API can match them to tool_results
@@ -55,26 +56,40 @@ There are no tests or linters configured.
 
 **Patching** (`tools/patch_system.py`): tries softwareupdate (macOS OS-level), Homebrew, pip, apt-get, dnf/yum in sequence, skipping any not present. Each command requires interactive `y/N` authorization from the admin before executing. `dry_run=True` prints the command instead. Uses `Popen` line-by-line streaming (capped at 2000 chars) to avoid buffering large upgrade logs. Admin decline sets `declined = True` and stops all further prompts for that call.
 
+**Logging** (`agent.py`, `_setup_logger()`): each `run_triage()` call creates a timestamped log file at `logs/<CVE-ID>_<YYYYMMDD_HHMMSS>.log`. The log captures: session metadata (CVE, mode, model), per-iteration headers with `stop_reason`, input/output token counts, and wall-clock latency, then each tool call with its full input dict and a 150-char result preview. The `logs/` directory is gitignored.
+
+## External API Dependencies
+
+| API | URL | Used for |
+|-----|-----|----------|
+| NVD v2.0 | `https://services.nvd.nist.gov/rest/json/cves/2.0` | CVE details, CVSS, CPE |
+| FIRST EPSS | `https://api.first.org/data/v1/epss` | Exploit probability score |
+| CISA KEV | `https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json` | Active exploitation status |
+
+All three are unauthenticated public APIs over HTTPS. NVD has rate limits (429 triggers backoff); the other two do not.
+
+## Adding a New Tool
+
+Four files must change in lockstep:
+
+1. **`tools/<name>.py`** — implement the function and return a plain string result
+2. **`tool_definitions.py`** — add a JSON schema dict describing the tool's inputs
+3. **`agent.py` `execute_tool()`** — add an `elif name == "<name>"` branch dispatching to the function
+4. **`agent.py` `run_triage()`** — append the new `_tool_def` to the `tools` list (conditionally if it should be gated like `patch_system`)
+
+The tool description in `tool_definitions.py` is what Claude reads to decide when and how to call the tool — keep it precise and action-oriented.
+
 ## Where the Autonomy Lives
 
 The Python loop has no intelligence — it only runs tools on demand and loops. Claude is the autonomous actor. On every iteration, Claude decides:
 
-- **Which tool to call** — the system prompt suggests fetching the CVE first, but nothing in the code enforces this. Claude chooses.
-- **Which products to check** — after reading the NVD response, Claude selects which affected products from the CPE list are worth checking on this machine. It may ignore irrelevant entries (e.g. skipping iOS/watchOS variants when triaging a desktop system).
-- **How many `check_system` calls to make** — the code handles any number. Claude decides when it has enough information to stop gathering data.
-- **Whether to patch** — if `patch_system` is available, Claude decides whether the triage warrants calling it and which `package_manager` hint to pass (inferred from `check_system` output).
-- **When to stop using tools and write the report** — no code tells Claude "you're done." Claude decides when evidence is sufficient.
-- **The triage reasoning itself** — Claude compares the detected version against the CVE's affected range and applies judgment. That comparison happens in Claude's reasoning, not in Python.
-
-This is the key difference from a pipeline, which would hardcode the steps:
-```python
-# Pipeline (not what this is):
-cve = fetch_cve(cve_id)
-result = check_system(product)
-triage = compute_triage(cve, result)  # logic in code
-```
-Here, all three steps — what to fetch, what to check, and how to decide — are delegated to Claude on each loop iteration.
+- **Which tool to call** — the system prompt suggests fetching the CVE first, but nothing in the code enforces this
+- **Which products to check** — Claude selects which affected products from the CPE list are worth checking, ignoring irrelevant entries (e.g. iOS/watchOS variants when triaging a desktop system)
+- **How many `check_system` calls to make** — the code handles any number; Claude decides when it has enough information
+- **Whether to patch** — if `patch_system` is available, Claude decides whether the triage warrants calling it and which `package_manager` hint to pass
+- **When to stop** — no code tells Claude "you're done"; Claude decides when evidence is sufficient
+- **The triage reasoning itself** — version comparison against the CVE's affected range happens in Claude's reasoning, not in Python
 
 ## Triage Logic
 
-Defined entirely in the system prompt in `agent.py` (`_build_system_prompt()`). Claude decides the triage level — not code. The mapping is CVSS score + whether affected software was found locally → CRITICAL/HIGH/MEDIUM/LOW/INFORMATIONAL → P1–P4 priority.
+Defined entirely in the system prompt in `agent.py` (`_build_system_prompt()`). The mapping is CVSS score + whether affected software was found locally → CRITICAL/HIGH/MEDIUM/LOW/INFORMATIONAL → P1–P4 priority. EPSS and KEV status can escalate the priority (KEV → minimum P2; EPSS ≥ 0.5 → minimum P2).

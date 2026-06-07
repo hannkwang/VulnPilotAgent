@@ -1,6 +1,9 @@
+import logging
 import os
 import platform
+import time
 import warnings
+from datetime import datetime
 warnings.filterwarnings("ignore", category=Warning, module="urllib3")
 from anthropic import Anthropic
 from dotenv import load_dotenv
@@ -119,6 +122,23 @@ def execute_tool(name: str, tool_input: dict, patch_enabled: bool, dry_run: bool
     return f"Unknown tool: {name}"
 
 
+def _setup_logger(cve_id: str) -> logging.Logger:
+    os.makedirs("logs", exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = os.path.join("logs", f"{cve_id}_{timestamp}.log")
+
+    logger = logging.getLogger(f"triage.{cve_id}.{timestamp}")
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+
+    handler = logging.FileHandler(log_path, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s  %(message)s", datefmt="%H:%M:%S"))
+    logger.addHandler(handler)
+
+    print(f"Logging to {log_path}")
+    return logger
+
+
 def run_triage(cve_id: str, patch_enabled: bool = False, dry_run: bool = False) -> str:
     # Build tool list — only expose patch_system when patching is enabled.
     tools = [fetch_cve_tool_def, check_epss_tool_def, check_system_tool_def]
@@ -128,13 +148,20 @@ def run_triage(cve_id: str, patch_enabled: bool = False, dry_run: bool = False) 
     system_prompt = _build_system_prompt(patch_enabled, dry_run)
     client = Anthropic()
     messages = [{"role": "user", "content": f"Triage {cve_id}"}]
+    logger = _setup_logger(cve_id)
 
     mode_label = ""
     if patch_enabled:
         mode_label = " [DRY RUN]" if dry_run else " [PATCH MODE]"
     print(f"Starting triage for {cve_id}{mode_label}...\n")
 
+    mode_str = mode_label.strip() or "TRIAGE ONLY"
+    logger.info(f"SESSION START  cve={cve_id}  mode={mode_str}  model={MODEL}")
+
+    iteration = 0
     while True:
+        iteration += 1
+        t0 = time.monotonic()
         response = client.messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
@@ -142,14 +169,23 @@ def run_triage(cve_id: str, patch_enabled: bool = False, dry_run: bool = False) 
             tools=tools,
             messages=messages,
         )
+        elapsed = time.monotonic() - t0
+        usage = response.usage
+        logger.info(
+            f"[ITER {iteration}] stop_reason={response.stop_reason}"
+            f"  tokens=in:{usage.input_tokens} out:{usage.output_tokens}"
+            f"  latency={elapsed:.2f}s"
+        )
 
         if response.stop_reason == "end_turn":
+            logger.info("[END] Agent reached end_turn — triage complete")
             for block in response.content:
                 if block.type == "text":
                     return block.text
             return "No text response produced."
 
         if response.stop_reason == "max_tokens":
+            logger.warning("[END] Response truncated at max_tokens")
             for block in response.content:
                 if block.type == "text":
                     return block.text + "\n\n[Response truncated — increase MAX_TOKENS]"
@@ -164,9 +200,11 @@ def run_triage(cve_id: str, patch_enabled: bool = False, dry_run: bool = False) 
             for block in response.content:
                 if block.type == "tool_use":
                     print(f"  Tool: {block.name}  Input: {block.input}")
+                    logger.info(f"  [TOOL]   {block.name}  input={block.input}")
                     result = execute_tool(block.name, block.input, patch_enabled, dry_run)
                     preview = result[:150] + "..." if len(result) > 150 else result
                     print(f"  Result: {preview}\n")
+                    logger.info(f"  [RESULT] ({len(result)} chars) {preview}")
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,
@@ -177,6 +215,7 @@ def run_triage(cve_id: str, patch_enabled: bool = False, dry_run: bool = False) 
             continue
 
         # Unexpected stop reason — return whatever text is available
+        logger.warning(f"[END] Unexpected stop_reason={response.stop_reason}")
         for block in response.content:
             if block.type == "text":
                 return block.text
