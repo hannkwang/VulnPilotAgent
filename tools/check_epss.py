@@ -15,7 +15,7 @@ def _fetch_epss(cve_id: str) -> str:
         response = requests.get(
             EPSS_URL,
             params={"cve": cve_id},
-            headers={"User-Agent": "CVE-Triage-Agent/1.0"},
+            headers={"User-Agent": "VulnPilotAgent/1.0"},
             timeout=10,
         )
         response.raise_for_status()
@@ -39,7 +39,7 @@ def _check_cisa_kev(cve_id: str) -> str:
     try:
         response = requests.get(
             CISA_KEV_URL,
-            headers={"User-Agent": "CVE-Triage-Agent/1.0"},
+            headers={"User-Agent": "VulnPilotAgent/1.0"},
             timeout=15,
         )
         response.raise_for_status()

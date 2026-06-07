@@ -7,7 +7,7 @@ from agent import run_triage
 
 def main():
     parser = argparse.ArgumentParser(
-        description="CVE Triage Agent — fetch, assess, and optionally patch vulnerabilities."
+        description="VulnPilotAgent — fetch, assess, and optionally patch vulnerabilities."
     )
     parser.add_argument("cve_id", help="CVE identifier, e.g. CVE-2024-1234")
     parser.add_argument(

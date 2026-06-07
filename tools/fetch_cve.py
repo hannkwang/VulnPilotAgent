@@ -6,7 +6,7 @@ NVD_BASE_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 
 def fetch_cve(cve_id: str) -> str:
     url = f"{NVD_BASE_URL}?cveId={cve_id}"
-    headers = {"User-Agent": "CVE-Triage-Agent/1.0"}
+    headers = {"User-Agent": "VulnPilotAgent/1.0"}
 
     for attempt in range(3):
         try:
