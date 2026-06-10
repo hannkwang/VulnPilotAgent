@@ -35,6 +35,7 @@ def patch_system(product_name: str, package_manager: str = "", dry_run: bool = F
             with subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
             ) as proc:
+                assert proc.stdout is not None
                 out_buf = []
                 total = 0
                 for line in proc.stdout:
@@ -43,7 +44,7 @@ def patch_system(product_name: str, package_manager: str = "", dry_run: bool = F
                     if total >= 2000:
                         proc.kill()
                         break
-                _, err = proc.communicate()
+                _, err = proc.communicate(timeout=120)
                 combined = ("".join(out_buf) + err).strip()
                 rc = proc.returncode if proc.returncode is not None else -1
             if rc == 0:

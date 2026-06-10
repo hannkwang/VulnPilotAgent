@@ -31,7 +31,7 @@ There are no tests or linters configured.
 
 **Entry point:** `main.py` validates the CVE ID format (`^CVE-\d{4}-\d{4,}$`) and parses `--patch` / `--dry-run` flags, then calls `run_triage()` in `agent.py`. It contains no agent logic.
 
-**Agentic loop:** `agent.py` (`run_triage()`) drives a `while True` loop calling `client.messages.create()` until `stop_reason == "end_turn"`. The Python code is purely mechanical — it executes whatever Claude requests and feeds results back. All decision-making happens inside Claude, not in the loop. Model and token budget are set as module-level constants (`MODEL = "claude-sonnet-4-6"`, `MAX_TOKENS = 4096`).
+**Agentic loop:** `agent.py` (`run_triage()`) drives a `while True` loop calling `client.messages.create()` until `stop_reason == "end_turn"`. The Python code is purely mechanical — it executes whatever Claude requests and feeds results back. All decision-making happens inside Claude, not in the loop. Model and token budget are set as module-level constants (`MODEL`, `MAX_TOKENS`).
 
 **Tool dispatch flow:**
 1. Claude calls `fetch_cve` → `tools/fetch_cve.py` hits the NVD API v2.0 and returns structured text
