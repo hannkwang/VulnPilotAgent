@@ -56,9 +56,15 @@ def _parse_cve(cve_id: str, cve_item: dict) -> str:
     cvss_score = "N/A"
     cvss_severity = "N/A"
     cvss_vector = "N/A"
+    cvss_version = ""
     metrics = cve_item.get("metrics", {})
 
-    for key in ("cvssMetricV31", "cvssMetricV30"):
+    for key, version in (
+        ("cvssMetricV40", "4.0"),
+        ("cvssMetricV31", "3.1"),
+        ("cvssMetricV30", "3.0"),
+        ("cvssMetricV2", "2.0"),
+    ):
         metric_list = metrics.get(key, [])
         if metric_list:
             primary = next(
@@ -67,8 +73,10 @@ def _parse_cve(cve_id: str, cve_item: dict) -> str:
             )
             cvss_data = primary.get("cvssData", {})
             cvss_score = cvss_data.get("baseScore", "N/A")
-            cvss_severity = cvss_data.get("baseSeverity", "N/A")
+            # CVSS v2 keeps severity on the metric entry, not inside cvssData
+            cvss_severity = cvss_data.get("baseSeverity") or primary.get("baseSeverity", "N/A")
             cvss_vector = cvss_data.get("vectorString", "N/A")
+            cvss_version = version
             break
 
     weaknesses = cve_item.get("weaknesses", [])
@@ -114,16 +122,32 @@ def _parse_cve(cve_id: str, cve_item: dict) -> str:
 
     products_str = "\n  - ".join(affected_products) if affected_products else "Not specified"
     published = cve_item.get("published", "Unknown")[:10]
+    vuln_status = cve_item.get("vulnStatus", "Unknown")
+
+    # Up to 5 reference URLs, preferring vendor advisories and patches.
+    def _ref_rank(ref: dict) -> int:
+        tags = ref.get("tags", [])
+        return 0 if ("Vendor Advisory" in tags or "Patch" in tags) else 1
+
+    references = sorted(cve_item.get("references", []), key=_ref_rank)
+    ref_urls = [r["url"] for r in references if r.get("url")][:5]
+    refs_str = "\n  - ".join(ref_urls) if ref_urls else "None"
+
+    cvss_label = f"CVSS v{cvss_version}" if cvss_version else "CVSS"
 
     return f"""CVE ID: {cve_id}
 Published: {published}
+NVD Status: {vuln_status}
 Description: {description}
 
-CVSS v3 Score: {cvss_score}
-CVSS Severity: {cvss_severity}
-CVSS Vector: {cvss_vector}
+{cvss_label} Score: {cvss_score}
+{cvss_label} Severity: {cvss_severity}
+{cvss_label} Vector: {cvss_vector}
 
 CWE IDs: {cwe_str}
 
 Affected Products (CPE):
-  - {products_str}"""
+  - {products_str}
+
+References:
+  - {refs_str}"""
